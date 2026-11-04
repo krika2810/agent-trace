@@ -35,7 +35,37 @@ Start a new session. The pane opens on its own, or run `/agent-trace`. `/agent-t
 
 Also: Insights (slowest step, costliest request, low cache hits), a Problems chip for failed or blocked steps, filters and search, and a layout that follows the pane as you resize it. Details for each follow.
 
-> Screenshots are coming. Until then, install it and send one prompt to see the pane.
+### Inspect
+
+Every step of a prompt as a card, with its time, tokens and cost, and tool calls hung under the request that asked for them.
+
+<img src="assets/inspect.png" alt="Inspect view: summary strip, insights and one card per model request with its tool calls" width="720">
+
+### Context
+
+What the latest request sent, largest part first, against the model's window.
+
+<img src="assets/context.png" alt="Context view: a funnel of tool definitions, tool results, skills, conversation and the rest" width="720">
+
+### Agents
+
+The main agent and each subagent, with its five-stage lifecycle and cost.
+
+<img src="assets/agents.png" alt="Agents view: a subagent's Delegate, Initialize, Run, Hand back and Cost stages" width="720">
+
+### Story
+
+The prompt told in plain sentences, each with its time.
+
+<img src="assets/story.png" alt="Story view: the prompt told in plain sentences with timestamps" width="720">
+
+### Prompts
+
+This session's prompts with their cost and time, and your saved earlier sessions.
+
+<img src="assets/prompts.png" alt="Prompts view: this session's prompts and earlier sessions" width="720">
+
+Costs in the screenshots are API-rate estimates.
 
 ## What it shows
 
