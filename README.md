@@ -172,4 +172,4 @@ Full details are in the [guide](./GUIDE.md#privacy).
 
 ## License
 
-MIT
+[MIT](./LICENSE)
