@@ -2,6 +2,10 @@
 
 **See exactly what Claude Code does after you send a prompt.**
 
+<a href="assets/demo.mp4"><img src="assets/demo-thumbnail.jpg" alt="agent-trace demo video" width="720"></a>
+
+[▶ Watch the demo](assets/demo.mp4) (3 min)
+
 agent-trace adds a pane beside the chat that lists every step Claude takes: each model request, tool call and subagent, with how long it took, how many tokens it used and what it cost. Use it to find what's slow, what's expensive and what failed.
 
 Works in the terminal, Claude Desktop's Code tab and the VS Code extension.
