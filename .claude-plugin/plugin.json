@@ -1,0 +1,13 @@
+{
+  "name": "agent-trace",
+  "version": "0.1.0",
+  "description": "Prompt flow pane: every step after a prompt is sent, in order, colored by type, with tokens, cost and failures",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Krishnamurthy",
+    "url": "https://github.com/krika2810"
+  },
+  "homepage": "https://github.com/krika2810/agent-trace",
+  "repository": "https://github.com/krika2810/agent-trace",
+  "keywords": ["claude code", "claude mod", "claude-code", "claude-mod", "mod", "observability", "tracing", "llm", "tokens", "cost"]
+}

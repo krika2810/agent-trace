@@ -1,0 +1,6 @@
+{
+  "name": "agent-trace",
+  "description": "Agent trace: a Claude Code pane that shows every step after a prompt, with time, tokens, context, subagents, problems and API-rate cost",
+  "owner": { "name": "Krishnamurthy" },
+  "plugins": [{ "name": "agent-trace", "source": "./" }]
+}
