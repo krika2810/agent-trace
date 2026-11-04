@@ -177,6 +177,48 @@ Claude Code mods are not sandboxed. Run `claude plugin validate .` to see the ho
 
 Full details are in the [guide](./GUIDE.md#privacy).
 
+## Contributing
+
+Bug reports, ideas and pull requests are welcome.
+
+- **Found a bug or have an idea?** [Open an issue](https://github.com/krika2810/agent-trace/issues/new). For a bug, include your Claude Code version, the surface (terminal, Desktop or VS Code) and a screenshot if you can.
+- **Want to change the code?** For anything bigger than a small fix, open an issue first so we can agree on the approach.
+
+### Raise a pull request
+
+1. Click **Fork** at the top of this page, then clone your fork:
+
+   ```bash
+   git clone https://github.com/<your-username>/agent-trace.git
+   cd agent-trace
+   git checkout -b my-change
+   ```
+
+2. Make your change and try it in a live session:
+
+   ```bash
+   claude --plugin-dir .
+   ```
+
+3. Run the checks:
+
+   ```bash
+   claude plugin validate .
+   claude plugin test .
+   python3 -I tests/test_today_cost.py
+   ```
+
+4. Commit, push your branch, and open the pull request:
+
+   ```bash
+   git commit -am "Describe the change"
+   git push -u origin my-change
+   ```
+
+   GitHub then shows a **Compare & pull request** button on your fork. Or, with the [GitHub CLI](https://cli.github.com), run `gh pr create`.
+
+In the pull request, say what changed and why. For a change to the pane, add a before and after screenshot. Every pull request is reviewed before it's merged.
+
 ## Documentation
 
 - [Claude Code mods overview](https://code.claude.com/docs/en/plugins/mods/overview)
