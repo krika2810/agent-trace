@@ -2741,7 +2741,7 @@ const childLabel = (part: PartKey) => (part === 'conversation' ? 'Task and Claud
       // The input summed over requests: each one re-sends the whole conversation, mostly from the cache,
       // so this runs far past Context, the latest request alone. The count says so; it wraps rather than cuts off.
       <Box key="stat:Tokens" flexDirection="column" width={perRow === 4 ? '24%' : perRow === 2 ? '48%' : '100%'}>
-        <Text color={MUTED} wrap="truncate-end">
+        <Text color={edge ? MUTED : STAT_TONE.Tokens} wrap="truncate-end">
           Tokens
         </Text>
         <Text bold color={INK} wrap="wrap">
