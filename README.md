@@ -1,6 +1,10 @@
 # agent-trace
 
-A Claude Code mod for seeing what a prompt actually did. A pane beside the chat lists every step after you send a prompt: model requests, tool calls, hooks and subagents, in order, with how long each took, tokens, cache use, cost and failures. It works in the terminal, the Code tab of Claude Desktop and the VS Code extension.
+**See exactly what Claude Code does after you send a prompt.**
+
+agent-trace adds a pane beside the chat that lists every step Claude takes: each model request, tool call and subagent, with how long it took, how many tokens it used and what it cost. Use it to find what's slow, what's expensive and what failed.
+
+Works in the terminal, Claude Desktop's Code tab and the VS Code extension.
 
 ```bash
 claude plugin marketplace add krika2810/agent-trace
