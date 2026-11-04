@@ -25,6 +25,12 @@ One card per step, with its time, tokens and cost, and tool calls nested under t
 
 <img src="assets/inspect.png" alt="Inspect view: summary strip, insights and one card per model request with its tool calls" width="720">
 
+### Parallel tool calls
+
+Tool calls that ran at the same time are marked `parallel 1 of 3`, `2 of 3` and so on, each with its own time and the tokens it added. Insights counts how many ran in parallel and in how many batches.
+
+<img src="assets/parallel.png" alt="Inspect view: one request with three WebFetch calls marked parallel 1 of 3, 2 of 3 and 3 of 3" width="720">
+
 ### Context
 
 What the latest request sent, as a funnel ordered largest part first (system prompt, tool definitions, memory, skills, tool results, conversation), measured against your model's context window. Open a part to see its largest items.
