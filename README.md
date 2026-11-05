@@ -59,6 +59,10 @@ This session's prompts with their cost and time, and your earlier sessions, save
 
 <img src="assets/prompts.png" alt="Prompts view: this session's prompts and earlier sessions" width="720">
 
+### Analytics
+
+Patterns across the whole session, or across every saved session. It starts with what stands out, then lists repeated tool calls (the same call with the same input and no edit between, with the tokens it re-added, flagged as a likely loop at five or more in a prompt), cost by prompt, context over the session, tools, where the time went, what went wrong, what it produced and who spent it. **All sessions** adds spend per day, the costliest sessions, and spend by project and by model.
+
 ### Copy
 
 The footer copies a whole run as CSV, Markdown or JSON to the clipboard. It is share-safe by default: commands, tool output and the final answer are left out, and credentials, emails and home folders are masked.

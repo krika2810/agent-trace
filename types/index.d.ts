@@ -262,6 +262,13 @@ export type HistoryEntry = {
   cost: number
   unpriced?: number
   problems: number
+  // For Analytics: spend by day and by model, input and cache reads, and calls. Absent on an
+  // entry saved before Analytics, until its file has been opened once to fill them.
+  days?: Record<string, number>
+  models?: Record<string, number>
+  tokensIn?: number
+  cacheRead?: number
+  calls?: number
 }
 
 // A session's trace as its file holds it.
@@ -288,7 +295,7 @@ export type Origin = {
   tokens: number
 }
 
-export type ViewMode = 'inspect' | 'context' | 'agents' | 'story' | 'runs'
+export type ViewMode = 'inspect' | 'context' | 'agents' | 'story' | 'runs' | 'analytics'
 
 export type DetailTab = 'summary' | 'io' | 'tokens' | 'raw' | 'related'
 
@@ -329,6 +336,12 @@ export type FlowView = {
   more?: string[]
   // Copy exports in detail (commands, previews, tasks, reports, the answer) rather than share-safe.
   detailed?: boolean
+  // Analytics: this session or all saved sessions, and how many days the latter covers.
+  scope?: 'session' | 'all'
+  range?: 7 | 14 | 30
+  // The request and the day picked on Analytics' two charts; absent, the latest.
+  point?: number
+  day?: number
 }
 
 // Kept so the copied ledger module type-checks unchanged.
