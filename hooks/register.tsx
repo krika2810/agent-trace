@@ -4,6 +4,7 @@ import type { EngineInterface, Register, RenderChildren, TurnStepResult } from '
 import type { AgentCall, AgentRequest, AtlasSnapshot, CostSplit, Detail, DetailTab, FileChange, HistoryEntry, SavedTrace, RunSummary, FlowContext, FlowView, LedgerItem, Origin, PartKey, PromptSnapshot, Quality, Row, Step, StepFilter, StepKind, StepStatus, Tokens, Turn, ViewMode } from '../types'
 import type { Message } from './ledger'
 import { formatCommand } from './command'
+import { allStats, contextChart, dayChart, dayText, entryFigures, needsFigures, pointText, QUALITY_OF, type RepeatRow, sessionStats, sparkline } from './analytics'
 import { fitTrace } from './history'
 import { calibrate, classify, condense, formatCost, formatTokens, PART_ORDER, PARTS, partTokens, tidyCommand } from './ledger'
 import { costOf, costSplitOf, PRICES_JSON, rateOf } from './pricing'
@@ -391,6 +392,7 @@ const MODES: { id: ViewMode; label: string }[] = [
   { id: 'agents', label: 'Agents' },
   { id: 'story', label: 'Story' },
   { id: 'runs', label: 'Prompts' },
+  { id: 'analytics', label: 'Analytics' },
 ]
 
 const FILTERS: { id: StepFilter; label: string; kinds?: StepKind[] }[] = [
@@ -1273,6 +1275,7 @@ const saveTrace = async ($: EngineInterface, force = false) => {
       cost: allTurns.reduce((sum, one) => sum + one.cost, 0),
       unpriced: allTurns.reduce((sum, one) => sum + (one.unpriced ?? 0), 0) || undefined,
       problems: allTurns.reduce((sum, one) => sum + summaryOf(one, allSteps.filter(step => step.turnId === one.id)).problems, 0),
+      ...entryFigures(allTurns, allSteps),
     }
     const others = (await savedList($)).filter(one => one.id !== id)
     await setSavedList($, [...others, entry].slice(-MAX_SESSIONS))
@@ -1304,6 +1307,30 @@ const readSaved = async ($: EngineInterface, id: string): Promise<SavedTrace | u
           }
         : step,
     ),
+  }
+}
+
+// Entries saved before Analytics lack its figures: each file is opened once to fill them, one
+// pass at a time. A file that won't open is given empty figures, so it isn't tried again.
+let filling = false
+const fillFigures = async ($: EngineInterface) => {
+  if (filling) return
+  filling = true
+  try {
+    const list = await savedList($)
+    const missing = list.filter(needsFigures)
+    if (missing.length === 0) return
+    const filled = new Map<string, HistoryEntry>()
+    for (const entry of missing) {
+      const trace = await readSaved($, entry.id).catch(() => undefined)
+      filled.set(entry.id, { ...entry, ...(trace ? entryFigures(trace.turns, trace.steps) : { models: {} }) })
+    }
+    // Read again, so a save made meanwhile is kept.
+    await setSavedList($, (await savedList($)).map(one => filled.get(one.id) ?? one))
+  } catch {
+    // Analytics shows what it has; the next visit tries again.
+  } finally {
+    filling = false
   }
 }
 
@@ -2855,6 +2882,7 @@ const childLabel = (part: PartKey) => (part === 'conversation' ? 'Task and Claud
       agents: String(flow.filter(step => step.kind === 'agent').length),
       story: '',
       runs: String(allTurns.length),
+      analytics: '',
     }
     const tabLabel = (one: (typeof MODES)[number], active: boolean) => [
       <Text key={`tab:${one.id}:label`} bold={active} underline={active && (Boolean(edge) || native)} color={active ? INK : MUTED}>
@@ -3290,6 +3318,647 @@ const childLabel = (part: PartKey) => (part === 'conversation' ? 'Task and Claud
           <Box marginTop={1}>
             <Text color={MUTED} wrap="wrap">
               Written from the recorded steps alone, without asking a model. › opens a step in the inspector.
+            </Text>
+          </Box>
+          {footer}
+        </Box>
+      )
+    }
+
+    // Patterns across the session's prompts, or across the saved sessions: what stands out first,
+    // then where the money, context, time and problems went. Each card says how its figures are known.
+    if (mode === 'analytics') {
+      const scope = state.scope ?? 'session'
+      const range = state.range ?? 14
+      const inner = Math.max(10, body - 8)
+      const pct = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : '–')
+      const tilesPerRow = body >= 72 ? 3 : body >= 40 ? 2 : 1
+      const tile = (label: string, value: string, sub: string, warn = false, action?: { label: string; press: () => void }) => (
+        <Box key={`tile:${label}`} flexDirection="column" width={tilesPerRow === 3 ? '32%' : tilesPerRow === 2 ? '48%' : '100%'}>
+          <Text color={warn ? TONE.blocked.text : MUTED} wrap="truncate-end">
+            {label}
+          </Text>
+          <Text bold color={INK} wrap="truncate-end">
+            {value}
+          </Text>
+          <Text color={MUTED} wrap="truncate-end">
+            {sub}
+          </Text>
+          {action ? (
+            <Button key={`tile:${label}:action`} dimColor onPress={action.press}>
+              {action.label}
+            </Button>
+          ) : null}
+        </Box>
+      )
+      const tiles = (key: string, items: ReturnType<typeof tile>[]) => (
+        <Box key={key} flexDirection="row" flexWrap="wrap" rowGap={1} justifyContent="space-between" marginTop={1} {...surface} paddingX={2} paddingY={1}>
+          {items}
+        </Box>
+      )
+      // A card with its title and, on the right, how its figures are known or a short count.
+      const card = (key: string, title: string, note: string, children: unknown, quality = false) => (
+        <Box key={key} flexDirection="column" marginTop={1} {...surface} paddingX={2} paddingY={1}>
+          <Box flexDirection="row" flexWrap="nowrap" justifyContent="space-between" gap={2}>
+            <Text bold color={INK} wrap="truncate-end">
+              {title}
+            </Text>
+            {note ? (
+              <Text color={MUTED} italic={quality} wrap="truncate-end">
+                {note}
+              </Text>
+            ) : null}
+          </Box>
+          <Box flexDirection="column" marginTop={1} rowGap={edge ? 0 : 0.25}>
+            {children as never}
+          </Box>
+        </Box>
+      )
+      const legend = (key: string, items: { color: string; text: string }[]) => (
+        <Box key={key} flexDirection="row" flexWrap="wrap" columnGap={2}>
+          {items.map((one, at) => (
+            <Text key={`${key}:${at}`} wrap="truncate-end">
+              <Text color={one.color}>■ </Text>
+              <Text color={MUTED}>{one.text}</Text>
+            </Text>
+          ))}
+        </Box>
+      )
+      const meter = (key: string, color: string, share: number, cells: number, alt: string) =>
+        Svg ? (
+          <Svg key={key} source={svgMeter(color, share, 6, false, cells)} alt={alt} />
+        ) : (
+          <Text key={key} wrap="truncate-end">
+            {textMeter(color, share, false, cells).map((part, at) => (
+              <Text key={`${key}:${at}`} color={part.color}>
+                {part.text}
+              </Text>
+            ))}
+          </Text>
+        )
+      const muted = (key: string, text: string) => (
+        <Text key={key} color={MUTED} wrap="wrap">
+          {text}
+        </Text>
+      )
+      // Under a chart: ‹ › step through its points, and the line says the picked one's figures.
+      // The editor draws a chart as an image with no hover, so this is how its numbers are read there.
+      const readout = (key: string, text: string, at: number, count: number, pick: (n: number) => void) => (
+        <Box key={key} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={1}>
+          <Button key={`${key}:prev`} dimColor onPress={() => pick(Math.max(0, at - 1))}>
+            ‹
+          </Button>
+          <Button key={`${key}:next`} dimColor onPress={() => pick(Math.min(count - 1, at + 1))}>
+            ›
+          </Button>
+          <Box flexGrow={1} flexShrink={1}>
+            <Text color={INK} wrap="truncate-end">
+              {text}
+            </Text>
+          </Box>
+        </Box>
+      )
+      // The two scopes, and the range under All sessions, in the same segmented control as the views.
+      const segments = (prefix: string, items: { id: string; label: string }[], active: string, pick: (id: string) => void) => (
+        <Box
+          key={`${prefix}:tray`}
+          flexDirection="row"
+          flexWrap="wrap"
+          flexShrink={0}
+          {...(edge || native ? { columnGap: edge ? 2 : 0.5, rowGap: 0, paddingX: 0, paddingY: 0 } : { columnGap: 0.25, rowGap: 0.25, paddingX: 0.25, paddingY: 0.25, borderStyle: 'round' })}
+        >
+          {items.map(one => (
+            <Box key={`${prefix}seg:${one.id}`} {...(one.id === active && !native && !edge ? { borderStyle: 'round', borderColor: MUTED } : {})} paddingX={native || edge ? 0 : 1} paddingY={0}>
+              <Button key={`${prefix}:${one.id}`} plain dimColor onPress={() => pick(one.id)}>
+                <Text bold={one.id === active} underline={one.id === active && (Boolean(edge) || native)} color={one.id === active ? INK : MUTED}>
+                  {one.label}
+                </Text>
+              </Button>
+            </Box>
+          ))}
+        </Box>
+      )
+      const SPLIT_BARS: { key: keyof CostSplit; label: string; color: string }[] = [
+        { key: 'cacheRead', label: 'Cache read', color: REREAD_BAR },
+        { key: 'cacheWrite', label: 'Cache write', color: KINDS.skill.bar },
+        { key: 'input', label: 'New input', color: NEW_BAR },
+        { key: 'output', label: 'Output', color: OUT_BAR },
+      ]
+
+      const runs = allTurns.map(one => summaryOf(one, allSteps.filter(step => step.turnId === one.id), ctx.branch))
+      const s = sessionStats(allTurns, allSteps, runs, window)
+      const scopeNote =
+        scope === 'session'
+          ? [plural(allTurns.length, 'prompt'), plural(s.requests, 'request'), duration(s.wallMs)].join(' · ')
+          : `last ${range} days`
+      const top = (
+        <Box key="an:top" flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={2} rowGap={edge ? 0 : 0.5} marginTop={1}>
+          {segments('scope', [{ id: 'session', label: saved ? 'Saved session' : 'This session' }, { id: 'all', label: 'All sessions' }], scope, id => setView({ scope: id as 'session' | 'all' }))}
+          <Text color={MUTED} wrap="truncate-end">
+            {scopeNote}
+          </Text>
+        </Box>
+      )
+
+      let cards: unknown[] = []
+      if (scope === 'session') {
+        const insights =
+          s.insights.length > 0 ? (
+            <Box key="an:insights" flexDirection="column" marginTop={1} {...surface} paddingX={2} paddingY={1} rowGap={edge ? 0 : 0.25}>
+              {s.insights.map((one, at) => (
+                <Box key={`insight:${at}`} flexDirection="row" flexWrap="nowrap" gap={1}>
+                  <Text color={one.tone === 'warn' ? TONE.blocked.text : KINDS.context.tone}>●</Text>
+                  <Box flexGrow={1} flexShrink={1}>
+                    <Text wrap="wrap">
+                      {one.runs.map((run, n) => (
+                        <Text key={`insight:${at}:${n}`} bold={run.bold} color={INK}>
+                          {run.text}
+                        </Text>
+                      ))}
+                    </Text>
+                  </Box>
+                </Box>
+              ))}
+            </Box>
+          ) : null
+
+        const sessionTiles = tiles('an:tiles', [
+          tile('Cost', costText(s.cost, s.unpriced), s.unpriced ? `API-rate estimate · ${s.unpriced} unpriced` : 'API-rate estimate'),
+          tile('Tokens', s.totalIn ? `${formatTokens(s.totalIn)} in` : '–', `${formatTokens(s.tokens.output)} out`),
+          tile('Cache hit', s.totalIn ? pct(s.tokens.cacheRead, s.totalIn) : '–', 'of input tokens'),
+          tile('Wall time', duration(s.wallMs), plural(allTurns.length, 'prompt')),
+          tile('Tool calls', String(s.calls), s.failed || s.blocked ? `${s.failed} failed · ${s.blocked} blocked` : 'none failed'),
+          tile(
+            'Duplicate calls',
+            `${s.dupes.count} of ${s.dupes.calls}`,
+            s.dupes.count ? `≈${formatTokens(s.dupes.tokens)} tokens re-added` : 'none repeated',
+            s.dupes.count > 0,
+            s.dupes.rows[0] ? { label: 'Review ›', press: () => review(s.dupes.rows[0] as RepeatRow) } : undefined,
+          ),
+        ])
+
+        // Cost by prompt: each prompt's bar as long as its share of the costliest, split by what was billed.
+        const most = Math.max(0.0001, ...s.prompts.map(one => one.cost))
+        const costRows = s.prompts.map(one => {
+          const width = Math.max(2, Math.round((one.cost / most) * 100))
+          const parts: Segment[] = one.split ? SPLIT_BARS.map(part => ({ color: part.color, tone: part.color, value: one.split?.[part.key] ?? 0 })) : [{ color: KINDS.model.bar, tone: KINDS.model.bar, value: one.cost }]
+          return (
+            <Box key={`cost:${one.id}`} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={2}>
+              <Box width={3} flexShrink={0}>
+                <Text color={MUTED}>{String(one.n)}</Text>
+              </Box>
+              <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                <Text wrap="truncate-end">
+                  <Text color={INK}>{one.title}</Text>
+                  {one.times && one.times >= 3 ? <Text color={TONE.blocked.text}>{`  ${one.times.toFixed(1)}× median`}</Text> : null}
+                </Text>
+                <Box width={`${width}%`}>{bar(`costbar:${one.id}`, parts, Math.max(1, Math.round(((inner - 14) * width) / 100)), 6, `${one.title}: ${costText(one.cost, one.unpriced)}`)}</Box>
+              </Box>
+              <Box width={8} flexShrink={0} flexDirection="row" flexWrap="nowrap" justifyContent="flex-end">
+                <Text color={INK} bold>
+                  {costText(one.cost, one.unpriced)}
+                </Text>
+              </Box>
+            </Box>
+          )
+        })
+        const costCard = card(
+          'an:cost',
+          'Cost by prompt',
+          'estimated',
+          [
+            legend('an:cost:legend', SPLIT_BARS.map(part => ({ color: part.color, text: part.label }))),
+            ...costRows,
+            s.saved > 0.005 ? muted('an:saved', `Cache saved about ${formatCost(s.saved)}: ${formatCost(s.cost)} against ${formatCost(s.cost + s.saved)} with nothing cached.`) : null,
+          ],
+          true,
+        )
+
+        // Context after each request against the window.
+        const peak = s.peak !== undefined ? s.points[s.peak] : undefined
+        const compactions = s.points.filter(one => one.compact).length
+        const ctxNote = [
+          peak ? `Peak ${formatTokens(peak.tokens)}${window ? ` (${pct(peak.tokens, window)} of the window)` : ''} at request ${(s.peak ?? 0) + 1}.` : '',
+          compactions ? `${plural(compactions, 'compaction')}.` : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+        const point = Math.min(s.points.length - 1, Math.max(0, state.point ?? s.points.length - 1))
+        const ctxChart =
+          s.points.length < 2
+            ? muted('an:ctx:none', 'Shows once the session has made two requests.')
+            : Svg
+              ? (
+                  <Box key="an:ctx:chart" width="100%">
+                    <Svg
+                      source={contextChart(s.points, window, s.jump, inner * PX_PER_CELL, { line: KINDS.context.bar, warn: NEW_BAR, ok: KINDS.done.bar }, point)}
+                      alt={`Context after each of ${s.points.length} requests${window ? ` against a ${formatTokens(window)} window` : ''}. ${ctxNote}`}
+                    />
+                  </Box>
+                )
+              : (
+                  <Box key="an:ctx:spark">
+                    <Text color={KINDS.context.tone} wrap="truncate-end">
+                      {sparkline(s.points.map(one => one.tokens), inner, Math.max(window ?? 0, ...s.points.map(one => one.tokens)))}
+                    </Text>
+                  </Box>
+                )
+        const ctxCard = card(
+          'an:ctx',
+          'Context over the session',
+          'observed',
+          [
+            ctxChart,
+            s.points.length >= 2 ? readout('ctxpick', pointText(s.points, point, window), point, s.points.length, n => setView({ point: n })) : null,
+            ctxNote ? muted('an:ctx:note', ctxNote) : null,
+          ],
+          true,
+        )
+
+        // Repeated calls: the same tool and input again with no successful edit between, most
+        // re-added first. A prompt number opens that prompt in Inspect, searched for the call.
+        const promptOf = (turnId: string) => allTurns.findIndex(turn => turn.id === turnId)
+        const review = (row: RepeatRow) => {
+          const at = row.turns.map(promptOf).filter(n => n >= 0)
+          const id = allTurns[at[0] ?? -1]?.id
+          // Without a search box (a mobile app that did not ask for Input) a query could not be seen or cleared, so it only opens the prompt.
+          if (id) setView({ mode: 'inspect', selected: id === allTurns.at(-1)?.id ? null : id, open: [], filter: 'all', query: Input ? row.search : '' })
+        }
+        const repeatsShown = s.dupes.rows.slice(0, 6)
+        const repeatMost = Math.max(1, ...repeatsShown.map(one => one.tokens))
+        const narrowRepeats = body < 50
+        const repeatCell = (key: string, width: number, text: string, color = INK, bold = false) => (
+          <Box key={key} width={width} flexShrink={0} flexDirection="row" flexWrap="nowrap" justifyContent="flex-end">
+            <Text color={color} bold={bold}>
+              {text}
+            </Text>
+          </Box>
+        )
+        const repeatsCard = !s.dupes.rows.length
+          ? card('an:repeats', 'Repeated calls', QUALITY_OF.dupes, [muted('repeats:none', `No call was repeated with the same input${s.dupes.calls ? ` across ${plural(s.dupes.calls, 'tool call')}` : ''}.`)], true)
+          : card(
+              'an:repeats',
+              'Repeated calls',
+              QUALITY_OF.dupes,
+              [
+                muted('repeats:what', 'The same tool with the same input, run again with no successful edit in between.'),
+                <Box key="repeats:head" flexDirection="row" flexWrap="nowrap" gap={1}>
+                  <Box flexGrow={1} flexShrink={1}>
+                    <Text color={MUTED}>Call</Text>
+                  </Box>
+                  {repeatCell('rh:times', 6, 'Times', MUTED)}
+                  {repeatCell('rh:prompt', 8, 'Prompt', MUTED)}
+                  {narrowRepeats ? null : repeatCell('rh:added', 9, 'Re-added', MUTED)}
+                </Box>,
+                ...repeatsShown.map((one, n) => {
+                  const prompts = one.turns.map(promptOf).filter(at => at >= 0)
+                  return (
+                    <Box key={`repeat:${n}`} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={1}>
+                      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                        <Text bold color={INK} wrap="truncate-end">
+                          {one.label}
+                        </Text>
+                        {narrowRepeats ? null : meter(`repeatbar:${n}`, NEW_BAR, one.tokens / repeatMost, Math.max(4, Math.min(METER_CELLS, inner - 30)), `${one.label}: ≈${formatTokens(one.tokens)} re-added`)}
+                      </Box>
+                      {repeatCell(`rt:${n}`, 6, `×${one.times}`, TONE.blocked.text, true)}
+                      <Box key={`rp:${n}`} width={8} flexShrink={0} flexDirection="row" flexWrap="nowrap" justifyContent="flex-end">
+                        {prompts.length ? (
+                          <Button key={`repeat:${n}:open`} dimColor onPress={() => review(one)}>
+                            {`#${prompts[0] + 1}${prompts.length > 1 ? ` +${prompts.length - 1}` : ''}`}
+                          </Button>
+                        ) : (
+                          <Text color={MUTED}>–</Text>
+                        )}
+                      </Box>
+                      {narrowRepeats ? null : repeatCell(`ra:${n}`, 9, `≈${formatTokens(one.tokens)}`)}
+                    </Box>
+                  )
+                }),
+                s.dupes.rows.length > repeatsShown.length ? muted('repeats:more', `${plural(s.dupes.rows.length - repeatsShown.length, 'more repeated call')}`) : null,
+                muted('repeats:note', Input ? 'Bars show tokens re-added. A prompt number opens that prompt with its steps searched for the call.' : 'Bars show tokens re-added. A prompt number opens that prompt.'),
+              ],
+              true,
+            )
+
+        // Tools, by what they added to the context.
+        const narrowTools = body < 50
+        const toolsShown = s.tools.slice(0, 8)
+        const toolMost = Math.max(1, ...toolsShown.map(one => one.added))
+        const toolCell = (key: string, width: number, text: string, color = INK) => (
+          <Box key={key} width={width} flexShrink={0} flexDirection="row" flexWrap="nowrap" justifyContent="flex-end">
+            <Text color={color}>{text}</Text>
+          </Box>
+        )
+        const toolHead = (
+          <Box key="tools:head" flexDirection="row" flexWrap="nowrap" gap={1}>
+            <Box flexGrow={1} flexShrink={1}>
+              <Text color={MUTED}>Tool</Text>
+            </Box>
+            {toolCell('th:calls', 6, 'Calls', MUTED)}
+            {narrowTools ? null : toolCell('th:run', 8, 'Avg run', MUTED)}
+            {toolCell('th:added', 7, 'Added', MUTED)}
+            {toolCell('th:fail', 6, 'Fail', MUTED)}
+          </Box>
+        )
+        const toolRows = toolsShown.map(one => {
+          const bad = one.failed + one.blocked
+          const rate = one.calls ? bad / one.calls : 0
+          return (
+            <Box key={`tool:${one.name}`} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={1}>
+              <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                <Text bold color={INK} wrap="truncate-end">
+                  {one.name}
+                </Text>
+                {narrowTools ? null : meter(`toolbar:${one.name}`, KINDS.tool.bar, one.added / toolMost, Math.max(4, Math.min(METER_CELLS, inner - 34)), `${one.name}: ≈${formatTokens(one.added)} added`)}
+              </Box>
+              {toolCell(`tc:${one.name}`, 6, String(one.calls))}
+              {narrowTools ? null : toolCell(`tr:${one.name}`, 8, one.timed ? duration(one.runMs / one.timed) : '–', MUTED)}
+              {toolCell(`ta:${one.name}`, 7, `≈${formatTokens(one.added)}`)}
+              {toolCell(`tf:${one.name}`, 6, bad ? `${Math.round(rate * 100)}%` : '0%', rate >= 0.05 ? TONE.failed.text : MUTED)}
+            </Box>
+          )
+        })
+        const moreTools = s.tools.slice(8)
+        const toolsCard = card(
+          'an:tools',
+          'Tools',
+          'by tokens added',
+          s.tools.length
+            ? [
+                toolHead,
+                ...toolRows,
+                moreTools.length ? muted('tools:more', `${plural(moreTools.length, 'more tool')} · ${moreTools.reduce((sum, one) => sum + one.calls, 0)} calls · ≈${formatTokens(moreTools.reduce((sum, one) => sum + one.added, 0))} added`) : null,
+              ]
+            : [muted('tools:none', 'No tool calls yet.')],
+        )
+
+        // Where the time went, summed over steps.
+        const TIME_BARS: Record<string, string> = { model: KINDS.model.bar, tools: KINDS.tool.bar, agents: KINDS.agent.bar, waiting: KINDS.hook.bar, overhead: TRACK_BAR.color }
+        const timeTotal = s.time.reduce((sum, one) => sum + one.ms, 0)
+        const timeCard = card(
+          'an:time',
+          'Where the time went',
+          'observed',
+          timeTotal
+            ? [
+                bar('an:time:bar', s.time.map(one => ({ color: TIME_BARS[one.key] ?? TRACK_BAR.color, tone: TIME_BARS[one.key], value: one.ms })), inner, 10, s.time.map(one => `${one.label} ${duration(one.ms)}`).join(', ')),
+                legend('an:time:legend', s.time.map(one => ({ color: TIME_BARS[one.key] ?? TRACK_BAR.color, text: `${one.label} ${pct(one.ms, timeTotal)} · ${duration(one.ms)}` }))),
+                muted('an:time:note', 'Summed over steps, so calls that ran together each count their own time. Hooks and checks is a call\'s time outside the tool itself.'),
+              ]
+            : [muted('an:time:none', 'No finished steps yet.')],
+          true,
+        )
+
+        // What went wrong, by tool and reason.
+        const wrongCard = card(
+          'an:wrong',
+          'What went wrong',
+          s.failed || s.blocked ? `${s.failed} failed · ${s.blocked} blocked` : '',
+          s.problems.length
+            ? s.problems.slice(0, 8).map((one, at) => (
+                <Box key={`wrong:${at}`} flexDirection="row" flexWrap="nowrap" justifyContent="space-between" gap={2}>
+                  <Box flexGrow={1} flexShrink={1}>
+                    <Text wrap="truncate-end">
+                      <Text bold color={INK}>
+                        {one.tool}
+                      </Text>
+                      <Text color={MUTED}>{`  ${one.reason}`}</Text>
+                    </Text>
+                  </Box>
+                  <Box flexShrink={0}>
+                    <Text color={TONE[one.status].text}>{`${one.count} ${one.status}`}</Text>
+                  </Box>
+                </Box>
+              ))
+            : [muted('wrong:none', 'Nothing failed or was blocked.')],
+        )
+
+        // What it produced: the files changed, and the cost per hundred lines.
+        const added = s.files.reduce((sum, one) => sum + one.added, 0)
+        const removed = s.files.reduce((sum, one) => sum + one.removed, 0)
+        const producedCard = card(
+          'an:produced',
+          'What it produced',
+          s.files.length ? `${plural(s.files.length, 'file')} · +${added} −${removed}` : '',
+          s.files.length
+            ? [
+                ...s.files.slice(0, 8).map(one => (
+                  <Box key={`file:${one.path}`} flexDirection="row" flexWrap="nowrap" justifyContent="space-between" gap={2}>
+                    <Box flexGrow={1} flexShrink={1}>
+                      <Text color={INK} wrap="truncate-start">
+                        {one.path}
+                      </Text>
+                    </Box>
+                    <Box flexShrink={0}>
+                      {one.tracked ? (
+                        <Text>
+                          <Text color={KINDS.done.tone}>{`+${one.added}`}</Text>
+                          <Text color={TONE.failed.text}>{` −${one.removed}`}</Text>
+                        </Text>
+                      ) : (
+                        <Text color={MUTED}>edited</Text>
+                      )}
+                    </Box>
+                  </Box>
+                )),
+                s.files.length > 8 ? muted('files:more', `${plural(s.files.length - 8, 'more file')}`) : null,
+                s.lines > 0 ? muted('files:rate', `About ${formatCost((s.cost / s.lines) * 100)} per 100 lines changed.`) : null,
+              ]
+            : [muted('files:none', 'No files changed yet.')],
+        )
+
+        // Who spent it: the main agent, then each subagent type.
+        const spendMost = Math.max(0.0001, ...s.spenders.map(one => one.cost))
+        const whoCard = card(
+          'an:who',
+          'Who spent it',
+          'estimated',
+          s.spenders.map(one => (
+            <Box key={`who:${one.name}`} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={2}>
+              <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                <Text color={INK} wrap="truncate-end">
+                  {one.main ? one.name : `${one.name}${one.runs > 1 ? ` ×${one.runs}` : ''}`}
+                </Text>
+                {meter(`whobar:${one.name}`, one.main ? KINDS.model.bar : KINDS.agent.bar, one.cost / spendMost, Math.max(4, Math.min(METER_CELLS * 2, inner - 18)), `${one.name}: ${formatCost(one.cost)}`)}
+              </Box>
+              <Box width={14} flexShrink={0} flexDirection="row" flexWrap="nowrap" justifyContent="flex-end">
+                <Text>
+                  <Text color={INK}>{formatCost(one.cost)}</Text>
+                  <Text color={MUTED}>{`  ${pct(one.cost, s.cost)}`}</Text>
+                </Text>
+              </Box>
+            </Box>
+          )),
+          true,
+        )
+        cards = [insights, sessionTiles, repeatsCard, costCard, ctxCard, toolsCard, timeCard, wrongCard, producedCard, whoCard]
+      } else {
+        // All sessions: the saved list, with this session's own figures as they are now.
+        const liveTurns = await read($, turns)
+        const liveSteps = await read($, steps)
+        const list = (await savedList($).catch(() => [] as HistoryEntry[])).filter(one => one.id !== liveCtx.historyId)
+        const liveFirst = liveTurns[0]
+        const liveEntry: HistoryEntry | undefined =
+          liveFirst && liveCtx.historyId
+            ? {
+                id: liveCtx.historyId,
+                at: liveFirst.at,
+                savedAt: now,
+                title: redact(liveFirst.title),
+                project: liveCtx.root?.split('/').pop(),
+                prompts: liveTurns.length,
+                cost: liveTurns.reduce((sum, one) => sum + one.cost, 0),
+                unpriced: liveTurns.reduce((sum, one) => sum + (one.unpriced ?? 0), 0) || undefined,
+                problems: liveTurns.reduce((sum, one) => sum + summaryOf(one, liveSteps.filter(step => step.turnId === one.id)).problems, 0),
+                ...entryFigures(liveTurns, liveSteps),
+              }
+            : undefined
+        const entries = liveEntry ? [...list, liveEntry] : list
+        if (list.some(needsFigures)) void fillFigures($)
+        const a = allStats(entries, now, range)
+        const filling = entries.filter(needsFigures).length
+        const rangeRow = segments(
+          'range',
+          [
+            { id: '7', label: '7 days' },
+            { id: '14', label: '14 days' },
+            { id: '30', label: '30 days' },
+          ],
+          String(range),
+          id => setView({ range: Number(id) as 7 | 14 | 30, day: undefined }),
+        )
+        const dayName = (ms: number) => new Date(ms).toLocaleDateString('en', { month: 'short', day: 'numeric' })
+        const allTiles = tiles('an:alltiles', [
+          tile('Spend', costText(a.spend, a.unpriced), 'API-rate estimate'),
+          tile('Sessions', String(a.sessions), plural(a.prompts, 'prompt')),
+          tile('Per prompt', a.prompts ? formatCost(a.perPrompt) : '–', 'average'),
+          tile('Cache hit', a.hit !== undefined ? `${Math.round(a.hit * 100)}%` : '–', 'of input tokens'),
+          tile('Problems', a.problemRate !== undefined ? `${(a.problemRate * 100).toFixed(1)}%` : '–', 'of tool calls'),
+          tile('Busiest day', a.busiest ? dayName(a.busiest.at) : '–', a.busiest ? formatCost(a.busiest.cost) : 'no spend yet'),
+        ])
+        const todayAt = a.bars.findIndex(one => one.day === dayOf(now))
+        const dayAt = Math.min(a.bars.length - 1, Math.max(0, state.day ?? (todayAt >= 0 ? todayAt : a.bars.length - 1)))
+        const dayCard = card(
+          'an:days',
+          'Spend per day',
+          'estimated',
+          [
+            Svg ? (
+              <Box key="an:days:chart" width="100%">
+                <Svg
+                  source={dayChart(a.bars, dayOf(now), inner * PX_PER_CELL, { bar: REREAD_BAR, today: KINDS.context.bar }, dayAt)}
+                  alt={`Spend per day over ${range} days${a.busiest ? `; the busiest was ${dayName(a.busiest.at)} at ${formatCost(a.busiest.cost)}` : ''}`}
+                />
+              </Box>
+            ) : (
+              <Box key="an:days:spark">
+                <Text color={KINDS.context.tone} wrap="truncate-end">
+                  {sparkline(a.bars.map(one => one.cost), inner)}
+                </Text>
+              </Box>
+            ),
+            readout('daypick', dayText(a.bars[dayAt]), dayAt, a.bars.length, n => setView({ day: n })),
+            edge ? muted('an:days:range', `${dayName(a.from)} to today`) : null,
+          ],
+          true,
+        )
+        const topCard = card(
+          'an:topcost',
+          'Costliest sessions',
+          'opens the saved trace',
+          a.top.length
+            ? a.top.map(one => {
+                const own = one.id === liveEntry?.id
+                return (
+                  <Box key={`topcost:${one.id}`} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={1}>
+                    <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                      <Text color={INK} wrap="truncate-end">
+                        {one.title}
+                      </Text>
+                      <Text color={MUTED} wrap="truncate-end">
+                        {[own ? 'This session' : dayName(one.at), one.project, plural(one.prompts, 'prompt')].filter(Boolean).join(' · ')}
+                      </Text>
+                    </Box>
+                    <Box flexShrink={0}>
+                      <Text bold color={INK}>
+                        {costText(one.cost, one.unpriced)}
+                      </Text>
+                    </Box>
+                    {own || one.id === saved?.id ? (
+                      <Button key={`topcost:${one.id}`} plain dimColor onPress={() => setView({ scope: 'session' })}>
+                        ›
+                      </Button>
+                    ) : (
+                      <Button key={`topcost:${one.id}`} plain dimColor onPress={() => void openSaved(one.id)}>
+                        ›
+                      </Button>
+                    )}
+                  </Box>
+                )
+              })
+            : [muted('topcost:none', 'No sessions in this range.')],
+        )
+        const PROJECT_BARS = [KINDS.model.bar, KINDS.tool.bar, KINDS.hook.bar, KINDS.agent.bar, KINDS.compact.bar, REREAD_BAR]
+        const projects = a.projects.length > 5 ? [...a.projects.slice(0, 5), { name: 'Other', cost: a.projects.slice(5).reduce((sum, one) => sum + one.cost, 0) }] : a.projects
+        const projectCard = card(
+          'an:projects',
+          'By project',
+          '',
+          projects.length
+            ? [
+                bar('an:projects:bar', projects.map((one, at) => ({ color: PROJECT_BARS[at] ?? REREAD_BAR, tone: PROJECT_BARS[at], value: one.cost })), inner, 10, projects.map(one => `${one.name} ${formatCost(one.cost)}`).join(', ')),
+                legend('an:projects:legend', projects.map((one, at) => ({ color: PROJECT_BARS[at] ?? REREAD_BAR, text: `${one.name} ${formatCost(one.cost)}` }))),
+              ]
+            : [muted('projects:none', 'No spend in this range.')],
+        )
+        const modelMost = Math.max(0.0001, ...a.models.map(one => one.cost))
+        const modelTotal = a.models.reduce((sum, one) => sum + one.cost, 0)
+        const modelCard = card(
+          'an:models',
+          'By model',
+          'estimated',
+          [
+            ...a.models.map(one => (
+              <Box key={`model:${one.name}`} flexDirection="row" flexWrap="nowrap" alignItems="center" gap={2}>
+                <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+                  <Text color={INK} wrap="truncate-end">
+                    {one.name}
+                  </Text>
+                  {meter(`modelbar:${one.name}`, OUT_BAR, one.cost / modelMost, Math.max(4, Math.min(METER_CELLS * 2, inner - 18)), `${one.name}: ${formatCost(one.cost)}`)}
+                </Box>
+                <Box width={14} flexShrink={0} flexDirection="row" flexWrap="nowrap" justifyContent="flex-end">
+                  <Text>
+                    <Text color={INK}>{formatCost(one.cost)}</Text>
+                    <Text color={MUTED}>{`  ${pct(one.cost, modelTotal)}`}</Text>
+                  </Text>
+                </Box>
+              </Box>
+            )),
+            a.models.length === 0 && !filling ? muted('models:none', 'No priced requests in this range.') : null,
+            filling ? muted('models:filling', `Reading ${plural(filling, 'saved session')} once for the model and cache figures…`) : null,
+          ],
+          true,
+        )
+        cards = [
+          <Box key="an:range" flexDirection="row" flexWrap="wrap" marginTop={1}>
+            {rangeRow}
+          </Box>,
+          allTiles,
+          dayCard,
+          topCard,
+          projectCard,
+          modelCard,
+        ]
+      }
+      return (
+        <Box flexDirection="column" {...page}>
+          {header}
+          {modes}
+          {top}
+          {cards as never}
+          <Box marginTop={1}>
+            <Text color={MUTED} wrap="wrap">
+              {scope === 'session' ? 'Rolled up from the recorded steps. Costs are API-rate estimates, not a bill.' : `From the sessions saved on this computer (kept ${HISTORY_DAYS} days) and this one.`}
             </Text>
           </Box>
           {footer}

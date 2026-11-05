@@ -2053,3 +2053,155 @@ test('tool calls sit as slim rows on a tree under the request that asked for the
   expect(await ui.find({ type: 'Text', text: /^Requested by$/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('Analytics rolls this session up: what stands out, tiles, cost by prompt, context, tools, time, problems, files and spenders', async ($, on) => {
+  disk = {}
+  sessionId = 'an1'
+  engine(on, mock.clock(on, { now: Date.now() }))
+  memoryStore(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await runPrompt($, 't1', '/review-story PSS-202', 'review-story')
+  // A second prompt reads the same file twice with no edit between: one duplicate.
+  await $.turn.start({ text: 'read the design again', turnId: 't2' })
+  await step($, 't2', 0)
+  await $.tool.call({ tool: 'Read', tool_use_id: 't2-r1', file_path: '/repo/design.md' } as never)
+  await $.tool.call({ tool: 'Read', tool_use_id: 't2-r2', file_path: '/repo/design.md' } as never)
+  await step($, 't2', 1)
+  await $.turn.complete({ turnId: 't2', answer: 'Done.', durationMs: 10, isAborted: false, reason: 'answer' } as never)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'mode:analytics' })
+    for (const title of ['Cost by prompt', 'Context over the session', 'Tools', 'Where the time went', 'What went wrong', 'What it produced', 'Who spent it'])
+      expect(await ui.find({ type: 'Text', text: new RegExp(`^${title}$`) })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Duplicate calls$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^1 of \d+$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: / repeated with the same input/ })).toBeDefined()
+    // Repeated calls names the call, how often it ran and the prompt it was in, with a Review link on the tile.
+    expect(await ui.find({ type: 'Text', text: /^Repeated calls$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Read .*design\.md$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^×2$/ })).toBeDefined()
+    expect(await ui.find({ key: 'repeat:0:open' })).toBeDefined()
+    expect(await ui.find({ key: 'tile:Duplicate calls:action' })).toBeDefined()
+    // Cost by prompt lists both prompts in order; the spenders name the main agent and the subagent type.
+    const rows = (await ui.findAll({ type: 'Box' })).map(box => String(box.key ?? '')).filter(key => key.startsWith('cost:'))
+    expect(rows).toEqual(['cost:t1', 'cost:t2'])
+    expect(await ui.find({ type: 'Text', text: /^Main agent$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^story-reviewer$/ })).toBeDefined()
+    // The blocked org and the failed test are listed by tool, with why.
+    expect(await ui.find({ type: 'Text', text: /protected org/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^1 blocked$/ })).toBeDefined()
+    // Each chart says how its figures are known.
+    expect((await ui.findAll({ type: 'Text', text: /^(estimated|observed)$/ })).length).toBeGreaterThanOrEqual(4)
+    // Charts are drawn off the terminal; the terminal gets a text line.
+    if (surface !== 'terminal') expect(await ui.find({ key: 'an:ctx:chart' })).toBeDefined()
+    else expect(await ui.find({ key: 'an:ctx:spark' })).toBeDefined()
+    // The chart is drawn as an image (an interactive Svg is a 300×150 frame on the desktop), and its
+    // height grows with its width so a wide pane does not flatten it. Each point's figures are in a
+    // readout under the chart that ‹ › step through, starting at the latest request.
+    if (surface !== 'terminal') {
+      const chart = (await ui.findAll({ type: 'Svg' as never } as never)).find(one => /^Context after each/.test(String(one.props.alt)))
+      expect(chart?.props.isInteractive).toBeUndefined()
+      const [, w, h] = String(chart?.props.source).match(/viewBox="0 0 (\d+) (\d+)"/) ?? []
+      expect(Number(w) / Number(h)).toBeLessThanOrEqual(4)
+    }
+    const latest = await ui.find({ type: 'Text', text: /^Request (\d+) of \1 · / })
+    expect(latest).toBeDefined()
+    await ui.press({ key: 'ctxpick:prev' })
+    expect(await ui.find({ type: 'Text', text: /^Request (\d+) of \1 · / })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /^Request \d+ of \d+ · / })).toBeDefined()
+    await ui.press({ key: 'ctxpick:next' })
+    expect(await ui.find({ type: 'Text', text: /^Request (\d+) of \1 · / })).toBeDefined()
+    // The pane's layout rules hold: rows say how they wrap, and no bordered Box is empty.
+    const boxes = await ui.findAll({ type: 'Box' })
+    for (const box of boxes) if (box.props.flexDirection === 'row') expect(box.props.flexWrap).toBeDefined()
+    for (const box of boxes) if (box.props.borderStyle) expect((box.children ?? []).length).toBeGreaterThan(0)
+    // Tiles: three to a row, then two, then one.
+    for (const [body, width] of [
+      [110, '32%'],
+      [60, '48%'],
+      [36, '100%'],
+    ] as const) {
+      await ui.redraw({ ...PANE.props, bodyColumns: body })
+      expect((await ui.find({ key: 'tile:Cost' }))?.props.width).toBe(width)
+    }
+    // A repeated call's prompt opens that prompt in Inspect, its steps searched for the call.
+    await ui.redraw({ ...PANE.props })
+    await ui.press({ key: 'repeat:0:open' })
+    // Where Inspect has a search box (not a mobile app that did not ask for Input) it holds the call.
+    const box = await ui.find({ key: 'search' })
+    if (box) expect(String(box.props.value)).toMatch(/design\.md/)
+    expect(await ui.find({ key: 'open:t2-r2' })).toBeDefined()
+    await ui.press({ key: 'mode:analytics' })
+    await ui.unmount()
+  }
+})
+
+test('one call repeated five or more times in a prompt reads as a likely loop', async ($, on) => {
+  disk = {}
+  sessionId = 'an3'
+  engine(on, mock.clock(on, { now: Date.now() }))
+  memoryStore(on)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'fix the flaky test', turnId: 'l1' })
+  await step($, 'l1', 0)
+  for (let n = 0; n < 6; n += 1) await $.tool.call({ tool: 'Read', tool_use_id: `l1-r${n}`, file_path: '/repo/session.ts' } as never)
+  await step($, 'l1', 1)
+  await $.turn.complete({ turnId: 'l1', answer: 'Done.', durationMs: 10, isAborted: false, reason: 'answer' } as never)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'mode:analytics' })
+  expect(await ui.find({ type: 'Text', text: /ran 6 times in prompt 1 with no edit between: a likely loop\.$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^×6$/ })).toBeDefined()
+  // Review opens the prompt searched for the call.
+  await ui.press({ key: 'tile:Duplicate calls:action' })
+  expect(String((await ui.find({ key: 'search' }))?.props.value)).toMatch(/session\.ts/)
+  await ui.unmount()
+})
+
+test('Analytics across sessions: spend by day, costliest sessions, projects and models; an old entry is filled from its file once', async ($, on) => {
+  // The session saved above, listed as before Analytics: its entry has no model or day figures.
+  expect(savedTrace).not.toBe('')
+  const { days: _d, models: _m, tokensIn: _t, cacheRead: _c, calls: _k, ...bare } = ((savedIndex as Record<string, unknown>[])[0] ?? {})
+  void [_d, _m, _t, _c, _k]
+  disk = { [`${HISTORY}/s1.json`]: savedTrace }
+  sessionId = 'now'
+  engine(on, mock.clock(on, { now: Date.now() }))
+  const stored = memoryStore(on, { sessions: [bare] })
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'today prompt', turnId: 'n1' })
+  await step($, 'n1', 0)
+  await $.turn.complete({ turnId: 'n1', answer: 'Done.', durationMs: 10, isAborted: false, reason: 'answer' } as never)
+  const list = () => stored.sessions as Record<string, unknown>[]
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await ui.press({ key: 'mode:analytics' })
+    await ui.press({ key: 'scope:all' })
+    for (const title of ['Spend per day', 'Costliest sessions', 'By project', 'By model']) expect(await ui.find({ type: 'Text', text: new RegExp(`^${title}$`) })).toBeDefined()
+    // Both sessions are listed, the live one marked as this session.
+    expect(await ui.find({ key: 'topcost:s1' })).toBeDefined()
+    expect(await ui.find({ key: 'topcost:now' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^This session · / })).toBeDefined()
+    // The old entry's file is read once and its figures kept in the list.
+    for (let n = 0; n < 5 && list().some(one => one.id === 's1' && !one.models); n++) await ui.redraw(PANE.props)
+    expect(list().find(one => one.id === 's1')?.models).toBeDefined()
+    await ui.redraw(PANE.props)
+    expect(await ui.find({ type: 'Text', text: /^sonnet-5-5$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^Reading / })).toBeUndefined()
+    // The day chart's readout starts on today and steps back a day.
+    const today = new Date().toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' })
+    expect(await ui.find({ type: 'Text', text: new RegExp(`^${today} · \\$`) })).toBeDefined()
+    await ui.press({ key: 'daypick:prev' })
+    expect(await ui.find({ type: 'Text', text: new RegExp(`^${today} · `) })).toBeUndefined()
+    await ui.press({ key: 'daypick:next' })
+    // The range switches, and › on a saved session opens it.
+    await ui.press({ key: 'range:7' })
+    expect(await ui.find({ type: 'Text', text: /^last 7 days$/ })).toBeDefined()
+    if (surface === 'desktop') {
+      await ui.press({ key: 'topcost:s1' })
+      expect(await ui.find({ type: 'Text', text: /^Earlier session$/ })).toBeDefined()
+      await ui.press({ key: 'history:back' })
+    }
+    await ui.unmount()
+  }
+})
